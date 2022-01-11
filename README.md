@@ -1,1 +1,1 @@
-# utils
+# Useful code snippets (UCS)
