@@ -1,11 +1,19 @@
 package git.comelf.common.metrics.impl;
 
 import git.comelf.common.metrics.MetricsCollector;
+import git.comelf.common.metrics.MetricsFilter;
+import git.comelf.common.metrics.MetricsInfo;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
+import static git.comelf.common.metrics.lib.Interns.info;
 
 public class MetricsCollectorImpl implements MetricsCollector,
-        Iterable<MetricsRecordBuilderImpl>{
+        Iterable<MetricsRecordBuilderImpl> {
 
-    private final List<MetricsRecordBuilderImpl> rbs = Lists.newArrayList();
+    private final List<MetricsRecordBuilderImpl> rbs = new ArrayList<>();
     private MetricsFilter recordFilter, metricFilter;
 
     @Override
@@ -20,11 +28,11 @@ public class MetricsCollectorImpl implements MetricsCollector,
 
     @Override
     public MetricsRecordBuilderImpl addRecord(String name) {
-        return addRecord(info(name, name +" record"));
+        return addRecord(info(name, name + " record"));
     }
 
     public List<MetricsRecordImpl> getRecords() {
-        List<MetricsRecordImpl> recs = Lists.newArrayListWithCapacity(rbs.size());
+        List<MetricsRecordImpl> recs = new ArrayList<>(rbs.size());
         for (MetricsRecordBuilderImpl rb : rbs) {
             MetricsRecordImpl mr = rb.getRecord();
             if (mr != null) {
@@ -39,7 +47,9 @@ public class MetricsCollectorImpl implements MetricsCollector,
         return rbs.iterator();
     }
 
-    public void clear() { rbs.clear(); }
+    public void clear() {
+        rbs.clear();
+    }
 
     MetricsCollectorImpl setRecordFilter(MetricsFilter rf) {
         recordFilter = rf;
