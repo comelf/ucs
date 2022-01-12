@@ -2,6 +2,7 @@ package git.comelf.event;
 
 import git.comelf.common.metrics.AbstractMetric;
 import git.comelf.common.metrics.MetricsRecord;
+import git.comelf.common.metrics.impl.MetricsCollectorImpl;
 import git.comelf.common.metrics.lib.DefaultMetricsSystem;
 import git.comelf.event.metrics.GenericEventTypeMetrics;
 import org.junit.Assert;
@@ -53,7 +54,7 @@ public class TestAsyncEventDispatcher {
     }
 
     // Test dispatcher should timeout on draining events.
-    @Test(timeout=10000)
+    @Test(timeout=60_000)
     public void testDispatchStopOnTimeout() throws Exception {
         BlockingQueue<Event> eventQueue = new LinkedBlockingQueue<Event>();
         eventQueue = spy(eventQueue);
@@ -66,6 +67,7 @@ public class TestAsyncEventDispatcher {
         disp.start();
         disp.waitForEventThreadToWait();
         disp.close();
+
     }
 
     @SuppressWarnings("rawtypes")

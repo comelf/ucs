@@ -12,6 +12,7 @@ import java.util.concurrent.*;
 
 public class AsyncDispatcher extends AbstractService implements Dispatcher {
     private static final Logger LOG = LoggerFactory.getLogger(AsyncDispatcher.class);
+    private static final int DEFAULT_YARN_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD = 5000;
 
     private final BlockingQueue<Event> eventQueue;
     private volatile int lastEventQueueSizeLogged = 0;
@@ -127,10 +128,7 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
 
     protected void serviceInit() throws Exception {
         super.init();
-//        this.detailsInterval = getConfig().getInt(YarnConfiguration.
-//                        YARN_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD,
-//                YarnConfiguration.
-//                        DEFAULT_YARN_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD);
+        this.detailsInterval = DEFAULT_YARN_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD;
 
 //        ThreadFactory threadFactory = new ThreadFactoryBuilder()
 //                .setNameFormat("PrintEventDetailsThread #%d")

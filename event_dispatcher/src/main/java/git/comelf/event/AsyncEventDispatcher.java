@@ -8,10 +8,13 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MarkerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public class AsyncEventDispatcher extends AbstractService implements Dispatcher {
-    public static final long DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT = 300000;
+    public static final long DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT = 30_000;
 
     private final Logger LOG = LoggerFactory.getLogger(this.getClass());
 
@@ -142,7 +145,7 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
 
     protected void serviceStart() throws Exception {
         //start all the components
-//        super.serviceStart();
+        super.serviceStart();
         eventHandlingThread = new Thread(createThread());
         eventHandlingThread.setName(dispatcherThreadName);
         eventHandlingThread.start();
@@ -156,7 +159,7 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
         if (drainEventsOnStop) {
             blockNewEvents = true;
             LOG.info("AsyncDispatcher is draining to stop, ignoring any new events.");
-            long endTime = System.currentTimeMillis() + DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT; // timout
+            long endTime = System.currentTimeMillis() + DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT; // timeout
 
             synchronized (waitForDrained) {
                 while (!isDrained() && eventHandlingThread != null
@@ -264,12 +267,6 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
             }
         };
     }
-
-    @Override
-    public boolean isInState(STATE state) {
-        return getServiceState() == state;
-    }
-
 
     class GenericEventHandler implements EventHandler<Event> {
         private void printEventQueueDetails() {

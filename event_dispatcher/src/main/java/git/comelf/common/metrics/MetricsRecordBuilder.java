@@ -77,7 +77,7 @@ public abstract class MetricsRecordBuilder {
      * @param value of the metric
      * @return self
      */
-    public abstract MetricsRecordBuilder addGauge(MetricsInfo info, float value);
+//    public abstract MetricsRecordBuilder addGauge(MetricsInfo info, float value);
 
     /**
      * Add a double gauge metric
@@ -86,7 +86,7 @@ public abstract class MetricsRecordBuilder {
      * @param value of the metric
      * @return self
      */
-    public abstract MetricsRecordBuilder addGauge(MetricsInfo info, double value);
+//    public abstract MetricsRecordBuilder addGauge(MetricsInfo info, double value);
 
     /**
      * @return the parent metrics collector object

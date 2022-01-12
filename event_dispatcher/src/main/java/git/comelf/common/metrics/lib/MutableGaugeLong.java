@@ -1,6 +1,7 @@
 package git.comelf.common.metrics.lib;
 
 import git.comelf.common.metrics.MetricsInfo;
+import git.comelf.common.metrics.MetricsRecordBuilder;
 
 import java.util.concurrent.atomic.AtomicLong;
 

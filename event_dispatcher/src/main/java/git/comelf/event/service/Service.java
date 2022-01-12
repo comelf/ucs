@@ -1,6 +1,8 @@
 package git.comelf.event.service;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.Map;
 
 public interface Service extends Cloneable{
     /**
@@ -60,9 +62,17 @@ public interface Service extends Cloneable{
 
     void close() throws IOException;
 
+
+    void registerServiceListener(ServiceStateChangeListener listener);
+    void unregisterServiceListener(ServiceStateChangeListener listener);
+
     String getName();
 //    Configuration getConfig();
     STATE getServiceState();
     long getStartTime();
     boolean isInState(STATE state);
+
+    boolean waitForServiceToStop(long timeout);
+    public List<LifecycleEvent> getLifecycleHistory();
+    public Map<String, String> getBlockers();
 }
