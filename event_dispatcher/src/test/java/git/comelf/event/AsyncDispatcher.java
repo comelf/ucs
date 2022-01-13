@@ -1,5 +1,24 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package git.comelf.event;
 
+import git.comelf.conf.Configuration;
 import git.comelf.event.metrics.EventTypeMetrics;
 import git.comelf.event.service.AbstractService;
 import git.comelf.event.util.TimeUtil;
@@ -126,8 +145,8 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
         exitOnDispatchException = false;
     }
 
-    protected void serviceInit() throws Exception {
-        super.init();
+    protected void serviceInit(Configuration conf) throws Exception {
+        super.init(conf);
         this.detailsInterval = DEFAULT_YARN_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD;
 
 //        ThreadFactory threadFactory = new ThreadFactoryBuilder()
@@ -157,7 +176,8 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
         if (drainEventsOnStop) {
             blockNewEvents = true;
             LOG.info("AsyncDispatcher is draining to stop, ignoring any new events.");
-            long endTime = AsyncEventDispatcher.DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT;
+            long endTime = TimeUtil.getTime() +
+                    getConfig().getLong(Configuration.DISPATCHER_DRAIN_EVENTS_TIMEOUT, Configuration.DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT);
 
             synchronized (waitForDrained) {
                 while (!isDrained() && eventHandlingThread != null
@@ -181,7 +201,7 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
         printEventDetailsExecutor.shutdownNow();
 
         // stop all the components
-//        super.serviceStop();
+        super.serviceStop();
     }
 
     @SuppressWarnings("unchecked")
@@ -203,9 +223,7 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
             //TODO Maybe log the state of the queue
             LOG.error(MarkerFactory.getMarker("FATAL"), "Error in dispatcher thread", t);
             // If serviceStop is called, we should exit this thread gracefully.
-            if (exitOnDispatchException
-//                    && (ShutdownHookManager.get().isShutdownInProgress()) == false
-                    && stopped == false) {
+            if (exitOnDispatchException && stopped == false) {
                 stopped = true;
                 Thread shutDownThread = new Thread(createShutDownThread());
                 shutDownThread.setName("AsyncDispatcher ShutDown handler");
@@ -302,8 +320,6 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
     /**
      * Multiplexing an event. Sending it to different handlers that
      * are interested in the event.
-     *
-     * @param <T> the type of event these multiple handlers are interested in.
      */
     static class MultiListenerHandler implements EventHandler<Event> {
         List<EventHandler<Event>> listofHandlers;

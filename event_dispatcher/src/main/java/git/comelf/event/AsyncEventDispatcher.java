@@ -1,5 +1,24 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package git.comelf.event;
 
+import git.comelf.conf.Configuration;
 import git.comelf.event.metrics.EventTypeMetrics;
 import git.comelf.event.service.AbstractService;
 import git.comelf.event.util.TimeUtil;
@@ -14,7 +33,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 public class AsyncEventDispatcher extends AbstractService implements Dispatcher {
-    public static final long DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT = 30_000;
 
     private final Logger LOG = LoggerFactory.getLogger(this.getClass());
 
@@ -112,35 +130,29 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
                         } else {
                             dispatch(event);
                         }
-//                        if (printTrigger) {
-//                            //Log the latest dispatch event type
-//                            // may cause the too many events queued
-//                            LOG.info("Latest dispatch event type: " + event.getType());
-//                            printTrigger = false;
-//                        }
+                        if (printTrigger) {
+                            //Log the latest dispatch event type
+                            // may cause the too many events queued
+                            LOG.info("Latest dispatch event type: " + event.getType());
+                            printTrigger = false;
+                        }
                     }
                 }
             }
         };
     }
 
-    protected void serviceInit() throws Exception {
-//        super.serviceInit(conf);
-//        this.detailsInterval = getConfig().getInt(YarnConfiguration.
-//                        YARN_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD,
-//                YarnConfiguration.
-//                        DEFAULT_YARN_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD);
-//
-//        ThreadFactory threadFactory = new  ThreadFactoryBuilder()
-//                .setNameFormat("PrintEventDetailsThread #%d")
-//                .build();
+    protected void serviceInit(Configuration conf) throws Exception {
+        super.serviceInit(conf);
+        this.detailsInterval = getConfig()
+                .getInt(Configuration.DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD,
+                        Configuration.DEFAULT_DISPATCHER_PRINT_EVENTS_INFO_THRESHOLD);
+
         // Thread pool for async print event details,
         // to prevent wasting too much time for RM.
         printEventDetailsExecutor = new ThreadPoolExecutor(
                 1, 5, 10, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>()
-//                ,threadFactory
-        );
+                new LinkedBlockingQueue<>());
     }
 
     protected void serviceStart() throws Exception {
@@ -159,12 +171,13 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
         if (drainEventsOnStop) {
             blockNewEvents = true;
             LOG.info("AsyncDispatcher is draining to stop, ignoring any new events.");
-            long endTime = System.currentTimeMillis() + DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT; // timeout
+            long endTime = TimeUtil.getTime() +
+                    getConfig().getLong(Configuration.DISPATCHER_DRAIN_EVENTS_TIMEOUT, Configuration.DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT);
 
             synchronized (waitForDrained) {
                 while (!isDrained() && eventHandlingThread != null
                         && eventHandlingThread.isAlive()
-                        && System.currentTimeMillis() < endTime) {
+                        && TimeUtil.getTime() < endTime) {
                     waitForDrained.wait(100);
                     LOG.info("Waiting for AsyncDispatcher to drain. Thread state is :" +
                             eventHandlingThread.getState());
@@ -182,8 +195,8 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
         }
         printEventDetailsExecutor.shutdownNow();
 
-//        // stop all the components
-//        super.serviceStop();
+        // stop all the components
+        super.serviceStop();
     }
 
     protected void dispatch(Event event) {
@@ -203,9 +216,7 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
             //TODO Maybe log the state of the queue
             LOG.error(MarkerFactory.getMarker("FATAL"), "Error in dispatcher thread", t);
             // If serviceStop is called, we should exit this thread gracefully.
-            if (exitOnDispatchException
-//                    && (ShutdownHookManager.get().isShutdownInProgress()) == false
-                    && stopped == false) {
+            if (exitOnDispatchException && stopped == false) {
                 stopped = true;
                 Thread shutDownThread = new Thread(createShutDownThread());
                 shutDownThread.setName("AsyncDispatcher ShutDown handler");
@@ -231,16 +242,14 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
         return new GenericEventHandler();
     }
 
-    public void addMetrics(EventTypeMetrics metrics,
-                           Class<? extends Enum> eventClass) {
+    public void addMetrics(EventTypeMetrics metrics, Class<? extends Enum> eventClass) {
         eventTypeMetricsMap.put(eventClass, metrics);
     }
 
     @Override
     public void register(Class<? extends Enum> eventType, EventHandler handler) {
         /* check to see if we have a listener registered */
-        EventHandler<Event> registeredHandler = (EventHandler<Event>)
-                eventDispatchers.get(eventType);
+        EventHandler<Event> registeredHandler = (EventHandler<Event>) eventDispatchers.get(eventType);
         LOG.info("Registering " + eventType + " for " + handler.getClass());
         if (registeredHandler == null) {
             eventDispatchers.put(eventType, handler);
@@ -252,19 +261,15 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
             eventDispatchers.put(eventType, multiHandler);
         } else {
             /* already a multilistener, just add to it */
-            MultiListenerHandler multiHandler
-                    = (MultiListenerHandler) registeredHandler;
+            MultiListenerHandler multiHandler = (MultiListenerHandler) registeredHandler;
             multiHandler.addHandler(handler);
         }
     }
 
     Runnable createShutDownThread() {
-        return new Runnable() {
-            @Override
-            public void run() {
-                LOG.info("Exiting, bbye..");
-                System.exit(-1);
-            }
+        return () -> {
+            LOG.info("Exiting, bbye..");
+            System.exit(-1);
         };
     }
 
@@ -324,8 +329,6 @@ public class AsyncEventDispatcher extends AbstractService implements Dispatcher 
     /**
      * Multiplexing an event. Sending it to different handlers that
      * are interested in the event.
-     *
-     * @param <T> the type of event these multiple handlers are interested in.
      */
     static class MultiListenerHandler implements EventHandler<Event> {
         List<EventHandler<Event>> listofHandlers;

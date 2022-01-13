@@ -1,5 +1,24 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package git.comelf.event;
 
+import git.comelf.conf.Configuration;
 import git.comelf.event.metrics.SimpleEventTypeMetrics;
 import org.junit.Assert;
 import org.junit.Test;
@@ -27,7 +46,7 @@ public class TestAsyncEventDispatcher {
         Event event = mock(Event.class);
         doThrow(new InterruptedException()).when(eventQueue).put(event);
         DrainDispatcher disp = new DrainDispatcher(eventQueue);
-        disp.init();
+        disp.init(new Configuration());
         disp.setDrainEventsOnStop();
         disp.start();
         // Wait for event handler thread to start and begin waiting for events.
@@ -45,15 +64,16 @@ public class TestAsyncEventDispatcher {
     }
 
     // Test dispatcher should timeout on draining events.
-    @Test(timeout=60_000)
+    @Test(timeout=10000)
     public void testDispatchStopOnTimeout() throws Exception {
         BlockingQueue<Event> eventQueue = new LinkedBlockingQueue<Event>();
         eventQueue = spy(eventQueue);
         // simulate dispatcher is not drained.
         when(eventQueue.isEmpty()).thenReturn(false);
-
+        Configuration conf = new Configuration();
+        conf.setInt(Configuration.DISPATCHER_DRAIN_EVENTS_TIMEOUT, 2000);
         DrainDispatcher disp = new DrainDispatcher(eventQueue);
-        disp.init();
+        disp.init(conf);
         disp.setDrainEventsOnStop();
         disp.start();
         disp.waitForEventThreadToWait();
@@ -116,7 +136,7 @@ public class TestAsyncEventDispatcher {
     public void testDrainDispatcherDrainEventsOnStop() throws Exception {
         BlockingQueue<Event> queue = new LinkedBlockingQueue<Event>();
         DrainDispatcher disp = new DrainDispatcher(queue);
-        disp.init();
+        disp.init(new Configuration());
         disp.register(DummyType.class, new DummyHandler());
         disp.setDrainEventsOnStop();
         disp.start();
@@ -131,7 +151,7 @@ public class TestAsyncEventDispatcher {
     public void testPrintDispatcherEventDetails() throws Exception {
         Logger log = mock(Logger.class);
         AsyncDispatcher dispatcher = new AsyncDispatcher();
-        dispatcher.init();
+        dispatcher.init(new Configuration());
 
         Field logger = AsyncDispatcher.class.getDeclaredField("LOG");
         logger.setAccessible(true);
@@ -173,7 +193,7 @@ public class TestAsyncEventDispatcher {
             throws Exception {
         Logger log = mock(Logger.class);
         AsyncDispatcher dispatcher = new AsyncDispatcher();
-        dispatcher.init();
+        dispatcher.init(new Configuration());
 
         Field logger = AsyncDispatcher.class.getDeclaredField("LOG");
         logger.setAccessible(true);
@@ -211,7 +231,7 @@ public class TestAsyncEventDispatcher {
 
             // We can the metrics enabled for TestEnum
             dispatcher.addMetrics(simpleEventTypeMetrics, simpleEventTypeMetrics.getEnumClass());
-            dispatcher.init();
+            dispatcher.init(new Configuration());
 
             // Register handler
             dispatcher.register(TestEnum.class, new TestHandler());
