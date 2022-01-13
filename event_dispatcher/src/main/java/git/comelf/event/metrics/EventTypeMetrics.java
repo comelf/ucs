@@ -1,8 +1,6 @@
 package git.comelf.event.metrics;
 
-import git.comelf.common.metrics.MetricsSource;
-
-public interface EventTypeMetrics <T extends Enum<T>> extends MetricsSource {
+public interface EventTypeMetrics <T extends Enum<T>> {
 
     void increment(T type, long processingTimeUs);
 

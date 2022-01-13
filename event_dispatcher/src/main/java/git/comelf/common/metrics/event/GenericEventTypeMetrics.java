@@ -1,19 +1,17 @@
-package git.comelf.event.metrics;
+package git.comelf.common.metrics.event;
 
-import git.comelf.common.metrics.MetricsCollector;
 import git.comelf.common.metrics.MetricsInfo;
 import git.comelf.common.metrics.MetricsSystem;
 import git.comelf.common.metrics.lib.MetricsRegistry;
 import git.comelf.common.metrics.lib.MutableGaugeLong;
+import git.comelf.event.metrics.EventTypeMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.EnumMap;
 
-public class GenericEventTypeMetrics<T extends Enum<T>>
-        implements EventTypeMetrics<T> {
-    static final Logger LOG =
-            LoggerFactory.getLogger(GenericEventTypeMetrics.class);
+public class GenericEventTypeMetrics<T extends Enum<T>> implements EventTypeMetrics<T> {
+    static final Logger LOG = LoggerFactory.getLogger(GenericEventTypeMetrics.class);
 
     private final EnumMap<T, MutableGaugeLong> eventCountMetrics;
     private final EnumMap<T, MutableGaugeLong> processingTimeMetrics;
@@ -39,10 +37,8 @@ public class GenericEventTypeMetrics<T extends Enum<T>>
                     type.toString() + "_" + "event_count";
             String processingTimeMetricsName =
                     type.toString() + "_" + "processing_time";
-            eventCountMetrics.put(type, this.registry.
-                    newGauge(eventCountMetricsName, eventCountMetricsName, 0L));
-            processingTimeMetrics.put(type, this.registry.
-                    newGauge(processingTimeMetricsName, processingTimeMetricsName, 0L));
+            eventCountMetrics.put(type, this.registry.newGauge(eventCountMetricsName, eventCountMetricsName, 0L));
+            processingTimeMetrics.put(type, this.registry.newGauge(processingTimeMetricsName, processingTimeMetricsName, 0L));
         }
     }
 
@@ -51,8 +47,7 @@ public class GenericEventTypeMetrics<T extends Enum<T>>
             // Register with the MetricsSystems
             if (this.ms != null) {
                 LOG.info("Registering GenericEventTypeMetrics");
-                ms.register(info.name(),
-                        info.description(), this);
+                ms.register(info.name(), info.description(), this);
                 isInitialized = true;
             }
         }
@@ -92,10 +87,10 @@ public class GenericEventTypeMetrics<T extends Enum<T>>
         return info;
     }
 
-    @Override
-    public void getMetrics(MetricsCollector collector, boolean all) {
-        registry.snapshot(collector.addRecord(registry.info()), all);
-    }
+//    @Override
+//    public void getMetrics(MetricsCollector collector, boolean all) {
+//        registry.snapshot(collector.addRecord(registry.info()), all);
+//    }
 
     public Class<T> getEnumClass() {
         return enumClass;
