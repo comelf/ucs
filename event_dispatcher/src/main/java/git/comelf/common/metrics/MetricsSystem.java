@@ -51,8 +51,7 @@ public abstract class MetricsSystem implements MetricsSystemMXBean {
      * @return the sink
      * @throws MetricsException
      */
-    public abstract <T extends MetricsSink>
-    T register(String name, String desc, T sink);
+    public abstract <T extends MetricsSink> T register(String name, String desc, T sink);
 
     /**
      * Register a callback interface for JMX events

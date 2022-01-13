@@ -1,24 +1,15 @@
 package git.comelf.event;
 
-import git.comelf.common.metrics.AbstractMetric;
-import git.comelf.common.metrics.MetricsRecord;
-import git.comelf.common.metrics.impl.MetricsCollectorImpl;
-import git.comelf.common.metrics.lib.DefaultMetricsSystem;
-import git.comelf.event.metrics.GenericEventTypeMetrics;
+import git.comelf.event.metrics.SimpleEventTypeMetrics;
 import org.junit.Assert;
 import org.junit.Test;
 import org.slf4j.Logger;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
-import static git.comelf.common.metrics.lib.Interns.info;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.*;
 
@@ -216,19 +207,10 @@ public class TestAsyncEventDispatcher {
         try {
             dispatcher = new AsyncDispatcher("RM Event dispatcher");
 
-            GenericEventTypeMetrics genericEventTypeMetrics =
-                    new GenericEventTypeMetrics.EventTypeMetricsBuilder()
-                            .setMs(DefaultMetricsSystem.instance())
-                            .setInfo(info("GenericEventTypeMetrics for "
-                                            + TestEnum.class.getName(),
-                                    "Metrics for " + dispatcher.getName()))
-                            .setEnumClass(TestEnum.class)
-                            .setEnums(TestEnum.class.getEnumConstants())
-                            .build().registerMetrics();
+            SimpleEventTypeMetrics simpleEventTypeMetrics = new SimpleEventTypeMetrics(TestEnum.class);
 
             // We can the metrics enabled for TestEnum
-            dispatcher.addMetrics(genericEventTypeMetrics,
-                    genericEventTypeMetrics.getEnumClass());
+            dispatcher.addMetrics(simpleEventTypeMetrics, simpleEventTypeMetrics.getEnumClass());
             dispatcher.init();
 
             // Register handler
@@ -248,44 +230,20 @@ public class TestAsyncEventDispatcher {
             }
 
             // Check event type count.
-            GenericTestUtils.waitFor(() -> genericEventTypeMetrics.
-                    get(TestEnum.TestEventType) == 3, 1000, 10000);
+            GenericTestUtils.waitFor(() -> simpleEventTypeMetrics.get(TestEnum.TestEventType) == 3, 1000, 10000);
 
-            GenericTestUtils.waitFor(() -> genericEventTypeMetrics.
-                    get(TestEnum.TestEventType2) == 2, 1000, 10000);
+            GenericTestUtils.waitFor(() -> simpleEventTypeMetrics.get(TestEnum.TestEventType2) == 2, 1000, 10000);
 
             // Check time spend.
-            Assert.assertTrue(genericEventTypeMetrics.
-                    getTotalProcessingTime(TestEnum.TestEventType)
-                    >= 1500 * 3);
-            Assert.assertTrue(genericEventTypeMetrics.
-                    getTotalProcessingTime(TestEnum.TestEventType)
-                    < 1500 * 4);
+            Assert.assertTrue(simpleEventTypeMetrics.getTotalProcessingTime(TestEnum.TestEventType) >= 1500 * 3);
+            Assert.assertTrue(simpleEventTypeMetrics.getTotalProcessingTime(TestEnum.TestEventType) < 1500 * 4);
 
-            Assert.assertTrue(genericEventTypeMetrics.
-                    getTotalProcessingTime(TestEnum.TestEventType2)
-                    >= 1500 * 2);
-            Assert.assertTrue(genericEventTypeMetrics.
-                    getTotalProcessingTime(TestEnum.TestEventType2)
-                    < 1500 * 3);
+            Assert.assertTrue(simpleEventTypeMetrics.getTotalProcessingTime(TestEnum.TestEventType2) >= 1500 * 2);
+            Assert.assertTrue(simpleEventTypeMetrics.getTotalProcessingTime(TestEnum.TestEventType2) < 1500 * 3);
 
             // Make sure metrics consistent.
-            Assert.assertEquals(Long.toString(genericEventTypeMetrics.
-                            get(TestEnum.TestEventType)),
-                    genericEventTypeMetrics.
-                            getRegistry().get("TestEventType_event_count").toString());
-            Assert.assertEquals(Long.toString(genericEventTypeMetrics.
-                            get(TestEnum.TestEventType2)),
-                    genericEventTypeMetrics.
-                            getRegistry().get("TestEventType2_event_count").toString());
-            Assert.assertEquals(Long.toString(genericEventTypeMetrics.
-                            getTotalProcessingTime(TestEnum.TestEventType)),
-                    genericEventTypeMetrics.
-                            getRegistry().get("TestEventType_processing_time").toString());
-            Assert.assertEquals(Long.toString(genericEventTypeMetrics.
-                            getTotalProcessingTime(TestEnum.TestEventType2)),
-                    genericEventTypeMetrics.
-                            getRegistry().get("TestEventType2_processing_time").toString());
+            Assert.assertEquals(simpleEventTypeMetrics.get(TestEnum.TestEventType), 3);
+            Assert.assertEquals(simpleEventTypeMetrics.get(TestEnum.TestEventType2), 2);
 
         } finally {
             dispatcher.close();
@@ -293,86 +251,5 @@ public class TestAsyncEventDispatcher {
 
     }
 
-    @Test
-    public void testDispatcherMetricsHistogram() throws Exception {
-        AsyncDispatcher dispatcher = null;
-
-        try {
-            dispatcher = new AsyncDispatcher("RM Event dispatcher");
-
-            GenericEventTypeMetrics genericEventTypeMetrics =
-                    new GenericEventTypeMetrics.EventTypeMetricsBuilder()
-                            .setMs(DefaultMetricsSystem.instance())
-                            .setInfo(info("GenericEventTypeMetrics for "
-                                            + TestEnum.class.getName(),
-                                    "Metrics for " + dispatcher.getName()))
-                            .setEnumClass(TestEnum.class)
-                            .setEnums(TestEnum.class.getEnumConstants())
-                            .build().registerMetrics();
-
-            // We can the metrics enabled for TestEnum
-            dispatcher.addMetrics(genericEventTypeMetrics,
-                    genericEventTypeMetrics.getEnumClass());
-            dispatcher.init();
-
-            // Register handler
-            dispatcher.register(TestEnum.class, new TestHandler());
-            dispatcher.start();
-
-            for (int i = 0; i < 3; ++i) {
-                Event event = mock(Event.class);
-                when(event.getType()).thenReturn(TestEnum.TestEventType);
-                dispatcher.getEventHandler().handle(event);
-            }
-
-            for (int i = 0; i < 2; ++i) {
-                Event event = mock(Event.class);
-                when(event.getType()).thenReturn(TestEnum.TestEventType2);
-                dispatcher.getEventHandler().handle(event);
-            }
-
-            // Check event type count.
-            GenericTestUtils.waitFor(() -> genericEventTypeMetrics.
-                    get(TestEnum.TestEventType) == 3, 1000, 10000);
-
-            GenericTestUtils.waitFor(() -> genericEventTypeMetrics.
-                    get(TestEnum.TestEventType2) == 2, 1000, 10000);
-
-            // submit actual values
-            Map<String, Long> expectedValues = new HashMap<>();
-            expectedValues.put("TestEventType_event_count",
-                    genericEventTypeMetrics.get(TestEnum.TestEventType));
-            expectedValues.put("TestEventType_processing_time",
-                    genericEventTypeMetrics.
-                            getTotalProcessingTime(TestEnum.TestEventType));
-            expectedValues.put("TestEventType2_event_count",
-                    genericEventTypeMetrics.get(TestEnum.TestEventType2));
-            expectedValues.put("TestEventType2_processing_time",
-                    genericEventTypeMetrics.
-                            getTotalProcessingTime(TestEnum.TestEventType2));
-            Set<String> testResults = new HashSet<>();
-
-            MetricsCollectorImpl collector = new MetricsCollectorImpl();
-            genericEventTypeMetrics.getMetrics(collector, true);
-
-            for (MetricsRecord record : collector.getRecords()) {
-                for (AbstractMetric metric : record.metrics()) {
-                    String metricName = metric.name();
-                    if (expectedValues.containsKey(metricName)) {
-                        Long expectedValue = expectedValues.get(metricName);
-                        Assert.assertEquals(
-                                "Metric " + metricName + " doesn't have expected value",
-                                expectedValue, metric.value());
-                        testResults.add(metricName);
-                    }
-                }
-            }
-            Assert.assertEquals(expectedValues.keySet(), testResults);
-
-        } finally {
-            dispatcher.close();
-        }
-
-    }
 
 }
