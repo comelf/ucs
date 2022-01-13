@@ -1,5 +1,24 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package git.comelf.event.service;
 
+import git.comelf.conf.Configuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,7 +35,9 @@ public abstract class AbstractService implements Service {
      */
     private final String name;
 
-    /** service state */
+    /**
+     * service state
+     */
     private final ServiceStateModel stateModel;
 
     /**
@@ -27,7 +48,7 @@ public abstract class AbstractService implements Service {
     /**
      * The configuration. Will be null until the service is initialized.
      */
-//    private volatile Configuration config;
+    private volatile Configuration config;
 
     /**
      * List of state change listeners; it is final to ensure
@@ -69,12 +90,13 @@ public abstract class AbstractService implements Service {
     /**
      * Map of blocking dependencies
      */
-    private final Map<String,String> blockerMap = new HashMap<String, String>();
+    private final Map<String, String> blockerMap = new HashMap<String, String>();
 
     private final Object stateChangeLock = new Object();
 
     /**
      * Construct the service.
+     *
      * @param name service name
      */
     public AbstractService(String name) {
@@ -87,16 +109,6 @@ public abstract class AbstractService implements Service {
         return stateModel.getState();
     }
 
-//    @Override
-//    public final synchronized Throwable getFailureCause() {
-//        return failureCause;
-//    }
-
-//    @Override
-//    public synchronized STATE getFailureState() {
-//        return failureState;
-//    }
-
     /**
      * Set the configuration for this service.
      * This method is called during {@link #init(Configuration)}
@@ -105,27 +117,32 @@ public abstract class AbstractService implements Service {
      * it with a new subclass of {@link Configuration}
      * @param conf new configuration.
      */
-//    protected void setConfig(Configuration conf) {
-//        this.config = conf;
-//    }
+    protected void setConfig(Configuration conf) {
+        this.config = conf;
+    }
 
     /**
      * {@inheritDoc}
      * This invokes {@link #serviceInit}
+     *
      * @param conf the configuration of the service. This must not be null
-     * @throws ServiceStateException if the configuration was null,
-     * the state change not permitted, or something else went wrong
+     * @throws RuntimeException if the configuration was null,
+     *                          the state change not permitted, or something else went wrong
      */
     @Override
-    public void init() {
+    public void init(Configuration conf) {
+        if (conf == null) {
+            throw new RuntimeException("Cannot initialize service "
+                    + getName() + ": null configuration");
+        }
         if (isInState(STATE.INITED)) {
             return;
         }
         synchronized (stateChangeLock) {
             if (enterState(STATE.INITED) != STATE.INITED) {
-//                setConfig(conf);
+                setConfig(conf);
                 try {
-                    serviceInit();
+                    serviceInit(conf);
                     if (isInState(STATE.INITED)) {
                         //if the service ended up here during init,
                         //notify the listeners
@@ -142,8 +159,9 @@ public abstract class AbstractService implements Service {
 
     /**
      * {@inheritDoc}
-     * @throws ServiceStateException if the current service state does not permit
-     * this action
+     *
+     * @throws RuntimeException if the current service state does not permit
+     *                          this action
      */
     @Override
     public void start() {
@@ -204,6 +222,7 @@ public abstract class AbstractService implements Service {
 
     /**
      * Relay to {@link #stop()}
+     *
      * @throws IOException
      */
     @Override
@@ -215,6 +234,7 @@ public abstract class AbstractService implements Service {
      * Failure handling: record the exception
      * that triggered it -if there was not one already.
      * Services are free to call this themselves.
+     *
      * @param exception the exception
      */
     protected final void noteFailure(Exception exception) {
@@ -239,7 +259,7 @@ public abstract class AbstractService implements Service {
         boolean completed = terminationNotification.get();
         while (!completed) {
             try {
-                synchronized(terminationNotification) {
+                synchronized (terminationNotification) {
                     terminationNotification.wait(timeout);
                 }
                 // here there has been a timeout, the object has terminated,
@@ -259,47 +279,47 @@ public abstract class AbstractService implements Service {
 
     /**
      * All initialization code needed by a service.
-     *
+     * <p>
      * This method will only ever be called once during the lifecycle of
      * a specific service instance.
-     *
+     * <p>
      * Implementations do not need to be synchronized as the logic
      * in {@link #init(Configuration)} prevents re-entrancy.
-     *
+     * <p>
      * The base implementation checks to see if the subclass has created
      * a new configuration instance, and if so, updates the base class value
+     *
      * @param conf configuration
      * @throws Exception on a failure -these will be caught,
-     * possibly wrapped, and will trigger a service stop
+     *                   possibly wrapped, and will trigger a service stop
      */
-    protected void serviceInit() throws Exception {
+    protected void serviceInit(Configuration conf) throws Exception {
     }
 
     /**
      * Actions called during the INITED to STARTED transition.
-     *
+     * <p>
      * This method will only ever be called once during the lifecycle of
      * a specific service instance.
-     *
+     * <p>
      * Implementations do not need to be synchronized as the logic
      * in {@link #start()} prevents re-entrancy.
      *
      * @throws Exception if needed -these will be caught,
-     * wrapped, and trigger a service stop
+     *                   wrapped, and trigger a service stop
      */
     protected void serviceStart() throws Exception {
-
     }
 
     /**
      * Actions called during the transition to the STOPPED state.
-     *
+     * <p>
      * This method will only ever be called once during the lifecycle of
      * a specific service instance.
-     *
+     * <p>
      * Implementations do not need to be synchronized as the logic
      * in {@link #stop()} prevents re-entrancy.
-     *
+     * <p>
      * Implementations MUST write this to be robust against failures, including
      * checks for null references -and for the first failure to not stop other
      * attempts to shut down parts of the service.
@@ -323,6 +343,7 @@ public abstract class AbstractService implements Service {
     /**
      * Register a global listener, which receives notifications
      * from the state change events of all services in the JVM
+     *
      * @param l listener
      */
     public static void registerGlobalListener(ServiceStateChangeListener l) {
@@ -331,6 +352,7 @@ public abstract class AbstractService implements Service {
 
     /**
      * unregister a global listener.
+     *
      * @param l listener to unregister
      * @return true if the listener was found (and then deleted)
      */
@@ -349,6 +371,12 @@ public abstract class AbstractService implements Service {
     public String getName() {
         return name;
     }
+
+    @Override
+    public Configuration getConfig() {
+        return config;
+    }
+
 
     @Override
     public long getStartTime() {
@@ -386,6 +414,7 @@ public abstract class AbstractService implements Service {
     /**
      * Enter a state; record this via {@link #recordLifecycleEvent}
      * and log at the info level.
+     *
      * @param newState the proposed new state
      * @return the original state
      * it wasn't already in that state, and the state model permits state re-entrancy.
@@ -414,7 +443,8 @@ public abstract class AbstractService implements Service {
     /**
      * Put a blocker to the blocker map -replacing any
      * with the same name.
-     * @param name blocker name
+     *
+     * @param name    blocker name
      * @param details any specifics on the block. This must be non-null.
      */
     protected void putBlocker(String name, String details) {
@@ -426,6 +456,7 @@ public abstract class AbstractService implements Service {
     /**
      * Remove a blocker from the blocker map -
      * this is a no-op if the blocker is not present
+     *
      * @param name the name of the blocker
      */
     public void removeBlocker(String name) {
