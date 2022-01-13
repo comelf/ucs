@@ -1,6 +1,5 @@
 package git.comelf.event;
 
-import java.sql.Time;
 import java.util.Objects;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
