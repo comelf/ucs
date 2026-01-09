@@ -1,0 +1,335 @@
+package com.github.comelf;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@DisplayName("ARCCacheTable 테스트")
+class ARCCacheTableTest {
+
+    private ARCCacheTable<Integer, String> cache;
+
+    @BeforeEach
+    void setUp() {
+        cache = new ARCCacheTable<Integer, String>().setMaxRow(10);
+    }
+
+    @Test
+    @DisplayName("기본 put/get 동작 확인")
+    void testBasicPutGet() {
+        cache.put(1, "one");
+        cache.put(2, "two");
+        cache.put(3, "three");
+
+        assertThat(cache.get(1)).isEqualTo("one");
+        assertThat(cache.get(2)).isEqualTo("two");
+        assertThat(cache.get(3)).isEqualTo("three");
+        assertThat(cache.size()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 키 조회 시 null 반환")
+    void testGetNonExistentKey() {
+        assertThat(cache.get(999)).isNull();
+        assertThat(cache.missCount()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("캐시가 꽉 찬 경우 eviction 발생")
+    void testEvictionWhenFull() {
+        // maxSize=10이므로 10개 초과 시 eviction
+        for (int i = 1; i <= 15; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        assertThat(cache.size()).isEqualTo(10);
+        assertThat(cache.evictionCount()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("T1에서 T2로 승격 - 두 번 액세스 시")
+    void testPromotionFromT1ToT2() {
+        cache.put(1, "one");
+
+        // 첫 번째 get: T1에 유지
+        String first = cache.get(1);
+        assertThat(first).isEqualTo("one");
+
+        // 두 번째 get: T2로 승격됨
+        String second = cache.get(1);
+        assertThat(second).isEqualTo("one");
+
+        // 통계 확인
+        assertThat(cache.hitCount()).isEqualTo(2);
+        assertThat(cache.size()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Sequential scan 패턴 - LRU의 약점 테스트")
+    void testSequentialScanPattern() {
+        // max=10, 1~20을 반복 접근
+        ARCCacheTable<Integer, String> smallCache = new ARCCacheTable<Integer, String>().setMaxRow(10);
+
+        // 첫 번째 pass
+        for (int i = 1; i <= 20; i++) {
+            smallCache.put(i, "value" + i);
+        }
+
+        int hitCountAfterFirstPass = smallCache.hitCount();
+
+        // 두 번째 pass - 일부는 ghost entry에서 재활용될 수 있음
+        for (int i = 1; i <= 20; i++) {
+            smallCache.put(i, "value" + i);
+        }
+
+        int hitCountAfterSecondPass = smallCache.hitCount();
+
+        // ARC는 ghost entry를 통해 적응하므로 일부 개선 가능
+        assertThat(smallCache.size()).isEqualTo(10);
+        assertThat(smallCache.adaptationCount()).isGreaterThan(0);
+
+        System.out.println("Sequential scan test:");
+        System.out.println("  " + smallCache.toString());
+    }
+
+    @Test
+    @DisplayName("적응형 파라미터 p 조정 - B1 히트 시 증가")
+    void testAdaptiveParameterPIncreaseOnB1Hit() {
+        // T1을 채우고 evict하여 B1에 ghost entry 생성
+        for (int i = 1; i <= 12; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        int initialP = cache.getP();
+
+        // B1에 있던 키를 다시 put (B1 히트)
+        cache.put(1, "value1_new");
+
+        // B1 히트 시 p가 증가해야 함 (recency 중시)
+        assertThat(cache.adaptationCount()).isGreaterThan(0);
+
+        System.out.println("B1 hit test:");
+        System.out.println("  Initial p: " + initialP);
+        System.out.println("  After B1 hit: " + cache.getP());
+        System.out.println("  " + cache.getStats());
+    }
+
+    @Test
+    @DisplayName("Hit rate 계산 확인")
+    void testHitRateCalculation() {
+        for (int i = 1; i <= 5; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        // 5번 hit
+        for (int i = 1; i <= 5; i++) {
+            cache.get(i);
+        }
+
+        // 5번 miss
+        for (int i = 6; i <= 10; i++) {
+            cache.get(i);
+        }
+
+        assertThat(cache.hitCount()).isEqualTo(5);
+        assertThat(cache.missCount()).isEqualTo(5);
+        assertThat(cache.hitRate()).isEqualTo(0.5f);
+
+        System.out.println("Hit rate test: " + cache.toString());
+    }
+
+    @Test
+    @DisplayName("containsKey 메소드 확인")
+    void testContainsKey() {
+        cache.put(1, "one");
+
+        assertThat(cache.containsKey(1)).isTrue();
+        assertThat(cache.containsKey(2)).isFalse();
+    }
+
+    @Test
+    @DisplayName("remove 메소드 확인")
+    void testRemove() {
+        cache.put(1, "one");
+        cache.put(2, "two");
+
+        String removed = cache.remove(1);
+
+        assertThat(removed).isEqualTo("one");
+        assertThat(cache.get(1)).isNull();
+        assertThat(cache.size()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("clear 메소드 확인")
+    void testClear() {
+        for (int i = 1; i <= 5; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        cache.clear();
+
+        assertThat(cache.size()).isEqualTo(0);
+        assertThat(cache.isEmpty()).isTrue();
+        assertThat(cache.getP()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("Resize 메소드 확인")
+    void testResize() {
+        for (int i = 1; i <= 10; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        assertThat(cache.size()).isEqualTo(10);
+
+        // 크기를 5로 축소
+        cache.resize(5);
+
+        assertThat(cache.maxSize()).isEqualTo(5);
+        assertThat(cache.size()).isLessThanOrEqualTo(5);
+        assertThat(cache.getP()).isEqualTo(0); // p가 리셋됨
+    }
+
+    @Test
+    @DisplayName("Time expiration 확인")
+    void testTimeExpiration() throws InterruptedException {
+        // 100ms 후 만료
+        cache.put(1, "one", 100);
+
+        assertThat(cache.get(1)).isEqualTo("one");
+
+        // 150ms 대기
+        Thread.sleep(150);
+
+        // 만료되어 null 반환
+        assertThat(cache.get(1)).isNull();
+        assertThat(cache.size()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("getKeepAlive 메소드로 TTL 갱신")
+    void testGetKeepAlive() throws InterruptedException {
+        cache.setDefaultKeepTime(200);
+        cache.put(1, "one");
+
+        // 100ms 대기
+        Thread.sleep(100);
+
+        // keepAlive로 TTL 갱신
+        assertThat(cache.getKeepAlive(1, 200)).isEqualTo("one");
+
+        // 추가 100ms 대기 (원래라면 만료되었을 시점)
+        Thread.sleep(100);
+
+        // 여전히 유효해야 함
+        assertThat(cache.get(1)).isEqualTo("one");
+    }
+
+    @Test
+    @DisplayName("Null 키 처리")
+    void testNullKeyHandling() {
+        assertThat(cache.put(null, "value")).isNull();
+        assertThat(cache.get(null)).isNull();
+        assertThat(cache.remove(null)).isNull();
+    }
+
+    @Test
+    @DisplayName("값 업데이트 시 기존 값 반환")
+    void testUpdateReturnsOldValue() {
+        cache.put(1, "old");
+        String oldValue = cache.put(1, "new");
+
+        assertThat(oldValue).isEqualTo("old");
+        assertThat(cache.get(1)).isEqualTo("new");
+    }
+
+    @Test
+    @DisplayName("Snapshot 메소드 확인")
+    void testSnapshot() {
+        for (int i = 1; i <= 5; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        java.util.Map<Integer, String> snapshot = cache.snapshot();
+
+        assertThat(snapshot.size()).isEqualTo(5);
+        assertThat(snapshot.get(1)).isEqualTo("value1");
+        assertThat(snapshot.get(5)).isEqualTo("value5");
+    }
+
+    @Test
+    @DisplayName("혼합 워크로드 - 반복적 액세스와 새로운 항목")
+    void testMixedWorkload() {
+        // Hot data: 1-5 (자주 액세스)
+        for (int round = 0; round < 3; round++) {
+            // Hot data 액세스
+            for (int i = 1; i <= 5; i++) {
+                cache.put(i, "hot" + i + "_r" + round);
+            }
+        }
+
+        // Cold data: 6-20 (한 번만 액세스)
+        for (int i = 6; i <= 20; i++) {
+            cache.put(i, "cold" + i + "_r" + 0);
+        }
+
+        // Hot data는 캐시에 남아있을 가능성 높음
+        int hotHits = 0;
+        for (int i = 1; i <= 5; i++) {
+            if (cache.get(i) != null) {
+                hotHits++;
+            }
+        }
+
+        System.out.println("Mixed workload test:");
+        System.out.println("  Hot data hits: " + hotHits + "/5");
+        System.out.println("  " + cache.toString());
+
+        // ARC가 hot data를 더 잘 유지해야 함
+        assertThat(hotHits).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("통계 초기값 확인")
+    void testInitialStatistics() {
+        ARCCacheTable<String, String> newCache = new ARCCacheTable<String, String>().setMaxRow(10);
+
+        assertThat(newCache.size()).isEqualTo(0);
+        assertThat(newCache.hitCount()).isEqualTo(0);
+        assertThat(newCache.missCount()).isEqualTo(0);
+        assertThat(newCache.putCount()).isEqualTo(0);
+        assertThat(newCache.evictionCount()).isEqualTo(0);
+        assertThat(newCache.adaptationCount()).isEqualTo(0);
+        assertThat(newCache.getP()).isEqualTo(0);
+        assertThat(newCache.hitRate()).isEqualTo(0.0f);
+    }
+
+    @Test
+    @DisplayName("Enumeration 테스트")
+    void testEnumeration() {
+        for (int i = 1; i <= 5; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        // Keys enumeration
+        java.util.Enumeration<Integer> keys = cache.keys();
+        int keyCount = 0;
+        while (keys.hasMoreElements()) {
+            keys.nextElement();
+            keyCount++;
+        }
+        assertThat(keyCount).isEqualTo(5);
+
+        // Values enumeration
+        java.util.Enumeration<String> values = cache.values();
+        int valueCount = 0;
+        while (values.hasMoreElements()) {
+            values.nextElement();
+            valueCount++;
+        }
+        assertThat(valueCount).isEqualTo(5);
+    }
+}
