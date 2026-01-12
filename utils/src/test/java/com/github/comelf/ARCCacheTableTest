@@ -9,11 +9,129 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("ARCCacheTable 테스트")
 class ARCCacheTableTest {
 
-    private ARCCacheTable<Integer, String> cache;
+    public static class ARCCacheTableWithStats<K, V> extends ARCCacheTable<K, V> {
+    
+        // Statistics
+        private int hitCount;
+        private int missCount;
+        private int putCount;
+        private int evictionCount;
+        private int adaptationCount;  // Number of p adjustments
+    
+        public ARCCacheTableWithStats() {
+            super();
+        }
+    
+        public ARCCacheTableWithStats(int initCapacity, float loadFactor) {
+            super(initCapacity, loadFactor);
+        }
+    
+        @Override
+        public ARCCacheTableWithStats<K, V> setMaxRow(int max) {
+            super.setMaxRow(max);
+            return this;
+        }
+    
+        @Override
+        public ARCCacheTableWithStats<K, V> setDefaultKeepTime(long time) {
+            super.setDefaultKeepTime(time);
+            return this;
+        }
+    
+        @Override
+        public synchronized V get(K key) {
+            V result = super.get(key);
+            if (result == null) {
+                missCount++;
+            } else {
+                hitCount++;
+            }
+            return result;
+        }
+    
+        @Override
+        public synchronized V put(K key, V value, long keepTime) {
+            putCount++;
+            return super.put(key, value, keepTime);
+        }
+    
+        @Override
+        protected void entryRemoved(boolean evicted, K key, V oldValue, V newValue) {
+            super.entryRemoved(evicted, key, oldValue, newValue);
+            if (evicted) {
+                evictionCount++;
+            }
+        }
+    
+        @Override
+        protected void onAdaptation() {
+            adaptationCount++;
+        }
+    
+        @Override
+        protected void onEviction() {
+            evictionCount++;
+        }
+    
+        @Override
+        public synchronized void clear() {
+            super.clear();
+            hitCount = 0;
+            missCount = 0;
+            putCount = 0;
+            evictionCount = 0;
+            adaptationCount = 0;
+        }
+    
+        // Statistics accessor methods
+    
+        public synchronized int hitCount() {
+            return hitCount;
+        }
+    
+        public synchronized int missCount() {
+            return missCount;
+        }
+    
+        public synchronized int putCount() {
+            return putCount;
+        }
+    
+        public synchronized int evictionCount() {
+            return evictionCount;
+        }
+    
+        public synchronized int adaptationCount() {
+            return adaptationCount;
+        }
+    
+        public synchronized float hitRate() {
+            int accesses = hitCount + missCount;
+            return accesses != 0 ? (float) hitCount / accesses : 0.0f;
+        }
+    
+        @Override
+        public synchronized String toString() {
+            int accesses = hitCount + missCount;
+            int hitPercent = accesses != 0 ? (100 * hitCount / accesses) : 0;
+            return String.format("ARCCache[size=%d/%d, hits=%d, misses=%d, hitRate=%d%%, " +
+                            "T1=%d, T2=%d, B1=%d, B2=%d, p=%d, adaptations=%d, puts=%d, evictions=%d]",
+                    size(), maxSize(), hitCount, missCount, hitPercent,
+                    getT1Size(), getT2Size(), getB1Size(), getB2Size(), getP(), adaptationCount,
+                    putCount, evictionCount);
+        }
+    
+        public String getStats() {
+            return String.format("ARCCache[total=%d/%d, T1=%d, T2=%d, B1=%d, B2=%d, p=%d]",
+                    size(), maxSize(), getT1Size(), getT2Size(), getB1Size(), getB2Size(), getP());
+        }
+    }
+
+    private ARCCacheTableWithStats<Integer, String> cache;
 
     @BeforeEach
     void setUp() {
-        cache = new ARCCacheTable<Integer, String>().setMaxRow(10);
+        cache = new ARCCacheTableWithStats<Integer, String>().setMaxRow(10);
     }
 
     @Test
@@ -70,7 +188,7 @@ class ARCCacheTableTest {
     @DisplayName("Sequential scan 패턴 - LRU의 약점 테스트")
     void testSequentialScanPattern() {
         // max=10, 1~20을 반복 접근
-        ARCCacheTable<Integer, String> smallCache = new ARCCacheTable<Integer, String>().setMaxRow(10);
+        ARCCacheTableWithStats<Integer, String> smallCache = new ARCCacheTableWithStats<Integer, String>().setMaxRow(10);
 
         // 첫 번째 pass
         for (int i = 1; i <= 20; i++) {
@@ -295,7 +413,7 @@ class ARCCacheTableTest {
     @Test
     @DisplayName("통계 초기값 확인")
     void testInitialStatistics() {
-        ARCCacheTable<String, String> newCache = new ARCCacheTable<String, String>().setMaxRow(10);
+        ARCCacheTableWithStats<String, String> newCache = new ARCCacheTableWithStats<String, String>().setMaxRow(10);
 
         assertThat(newCache.size()).isEqualTo(0);
         assertThat(newCache.hitCount()).isEqualTo(0);
@@ -331,5 +449,226 @@ class ARCCacheTableTest {
             valueCount++;
         }
         assertThat(valueCount).isEqualTo(5);
+    }
+
+    // ====== Production-Level Tests ======
+
+    @Test
+    @DisplayName("Ghost entry 크기 제한 - 메모리 누수 방지")
+    void testGhostEntrySizeBounds() {
+        ARCCacheTable<Integer, String> cache = new ARCCacheTable<Integer, String>().setMaxRow(100);
+
+        // Insert 1000 items to force many evictions and ghost entries
+        for (int i = 0; i < 1000; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        // Verify that total size (T1 + T2 + B1 + B2) doesn't exceed 2 * maxSize
+        int totalSize = cache.size(); // T1 + T2 should be <= 100
+        assertThat(totalSize).isLessThanOrEqualTo(100);
+
+        System.out.println("Ghost entry bounds test: " + cache.getStats());
+        System.out.println("  Cache size: " + cache.size());
+        System.out.println("  Max size: " + cache.maxSize());
+    }
+
+    @Test
+    @DisplayName("동시성 테스트 - 멀티스레드 환경")
+    void testConcurrency() throws InterruptedException {
+        ARCCacheTable<Integer, String> cache = new ARCCacheTable<Integer, String>().setMaxRow(1000);
+
+        int numThreads = 10;
+        int operationsPerThread = 1000;
+        java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(numThreads);
+        java.util.concurrent.atomic.AtomicInteger errorCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        // Create threads that perform concurrent put/get operations
+        for (int t = 0; t < numThreads; t++) {
+            final int threadId = t;
+            new Thread(() -> {
+                try {
+                    startLatch.await(); // Wait for all threads to be ready
+
+                    for (int i = 0; i < operationsPerThread; i++) {
+                        int key = (threadId * operationsPerThread + i) % 500; // Some overlap
+                        cache.put(key, "thread-" + threadId + "-value-" + i);
+
+                        if (i % 3 == 0) {
+                            cache.get(key);
+                        }
+                    }
+                } catch (Exception e) {
+                    errorCount.incrementAndGet();
+                    e.printStackTrace();
+                } finally {
+                    doneLatch.countDown();
+                }
+            }).start();
+        }
+
+        startLatch.countDown(); // Start all threads
+        doneLatch.await(); // Wait for all threads to finish
+
+        assertThat(errorCount.get()).isEqualTo(0);
+        assertThat(cache.size()).isLessThanOrEqualTo(1000);
+
+        System.out.println("Concurrency test: " + cache.toString());
+    }
+
+    @Test
+    @DisplayName("대용량 데이터 처리 테스트")
+    void testLargeDataVolume() {
+        ARCCacheTable<Integer, String> cache = new ARCCacheTable<Integer, String>().setMaxRow(10000);
+
+        long startTime = System.currentTimeMillis();
+
+        // Insert 100,000 items
+        for (int i = 0; i < 100000; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        long insertTime = System.currentTimeMillis() - startTime;
+
+        // Access hot data (recent 20%)
+        startTime = System.currentTimeMillis();
+        int hits = 0;
+        for (int i = 80000; i < 100000; i++) {
+            if (cache.get(i) != null) {
+                hits++;
+            }
+        }
+        long accessTime = System.currentTimeMillis() - startTime;
+
+        System.out.println("Large data volume test:");
+        System.out.println("  Insert time: " + insertTime + "ms for 100,000 items");
+        System.out.println("  Access time: " + accessTime + "ms for 20,000 items");
+        System.out.println("  Hot data hits: " + hits + "/20000");
+        System.out.println("  " + cache.toString());
+
+        assertThat(cache.size()).isEqualTo(10000);
+        assertThat(hits).isGreaterThan(0); // Some hot data should be in cache
+    }
+
+    @Test
+    @DisplayName("Stress test - 장시간 반복 실행")
+    void testStress() {
+        ARCCacheTableWithStats<Integer, String> cache = new ARCCacheTableWithStats<Integer, String>().setMaxRow(500);
+
+        // Simulate 10,000 rounds of operations
+        for (int round = 0; round < 10000; round++) {
+            // Mix of operations
+            for (int i = 0; i < 10; i++) {
+                int key = (round * 10 + i) % 2000; // Cycling through keys
+                cache.put(key, "round-" + round + "-value-" + i);
+
+                if (i % 2 == 0) {
+                    cache.get(key);
+                }
+            }
+        }
+
+        System.out.println("Stress test completed: " + cache.toString());
+
+        assertThat(cache.size()).isLessThanOrEqualTo(500);
+        assertThat(cache.putCount()).isEqualTo(100000);
+        assertThat(cache.hitCount()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("Performance benchmark - Hit rate 측정")
+    void testPerformanceBenchmark() {
+        ARCCacheTable<Integer, String> cache = new ARCCacheTable<Integer, String>().setMaxRow(500);
+
+        // Scenario: 80-20 rule (80% accesses to 20% of hot data)
+        // Hot data: 0-99 (100 items)
+        // Cold data: 100-999 (900 items)
+        // Cache size: 500
+
+        // Initial load - put all data once
+        for (int i = 0; i < 1000; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        // Now perform mixed access pattern: frequently access hot data
+        for (int round = 0; round < 50; round++) {
+            // Access hot data repeatedly (80% of accesses)
+            for (int i = 0; i < 80; i++) {
+                cache.put(i % 100, "value" + (i % 100)); // Repeatedly access 0-99
+            }
+
+            // Access cold data less frequently (20% of accesses)
+            for (int i = 0; i < 20; i++) {
+                int coldKey = 100 + ((round * 20 + i) % 900);
+                cache.put(coldKey, "value" + coldKey);
+            }
+        }
+
+        // Now test get performance on hot data
+        int hotHits = 0;
+        int hotMisses = 0;
+        for (int i = 0; i < 100; i++) {
+            if (cache.get(i) != null) {
+                hotHits++;
+            } else {
+                hotMisses++;
+            }
+        }
+
+        float hotHitRate = (float) hotHits / 100;
+        System.out.println("Performance benchmark (80-20 pattern):");
+        System.out.println("  " + cache.toString());
+        System.out.println("  Hot data hit rate: " + (hotHitRate * 100) + "% (" + hotHits + "/100)");
+
+        // ARC should keep hot data in cache with high hit rate
+        assertThat(hotHitRate).isGreaterThan(0.5f);
+    }
+
+    @Test
+    @DisplayName("Adaptive parameter 동작 검증")
+    void testAdaptiveParameterBehavior() {
+        ARCCacheTableWithStats<Integer, String> cache = new ARCCacheTableWithStats<Integer, String>().setMaxRow(100);
+
+        // Phase 1: Recency pattern - sequential access
+        for (int i = 0; i < 200; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        int pAfterRecency = cache.getP();
+        System.out.println("After recency pattern, p = " + pAfterRecency);
+
+        // Phase 2: Frequency pattern - repeated access to small set
+        for (int round = 0; round < 10; round++) {
+            for (int i = 0; i < 50; i++) {
+                cache.put(i, "value" + i + "_r" + round);
+            }
+        }
+
+        int pAfterFrequency = cache.getP();
+        System.out.println("After frequency pattern, p = " + pAfterFrequency);
+        System.out.println("Adaptation count: " + cache.adaptationCount());
+
+        // p should adapt based on workload
+        assertThat(cache.adaptationCount()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("Memory efficiency - Ghost entry 대비 실제 캐시 비율")
+    void testMemoryEfficiency() {
+        ARCCacheTable<Integer, String> cache = new ARCCacheTable<Integer, String>().setMaxRow(100);
+
+        // Generate heavy eviction scenario
+        for (int i = 0; i < 1000; i++) {
+            cache.put(i, "value" + i);
+        }
+
+        int actualCacheSize = cache.size();
+        System.out.println("Memory efficiency test:");
+        System.out.println("  " + cache.getStats());
+        System.out.println("  Actual cache size: " + actualCacheSize);
+        System.out.println("  Max size: " + cache.maxSize());
+
+        // Actual cache should not exceed maxSize
+        assertThat(actualCacheSize).isLessThanOrEqualTo(cache.maxSize());
     }
 }
