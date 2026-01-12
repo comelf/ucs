@@ -7,19 +7,17 @@ import java.util.NoSuchElementException;
 
 /**
  * ARC (Adaptive Replacement Cache) Algorithm Implementation
- *
- * ARC는 4개의 LRU 리스트를 사용:
- * - T1: 최근 한 번만 참조된 페이지 (recency)
- * - T2: 최근 두 번 이상 참조된 페이지 (frequency)
- * - B1: T1에서 제거된 페이지 히스토리 (ghost entries)
- * - B2: T2에서 제거된 페이지 히스토리 (ghost entries)
- *
- * 적응형 파라미터 p:
- * - T1의 목표 크기를 동적으로 조정
- * - B1 히트 시 p 증가 (recency 중시)
- * - B2 히트 시 p 감소 (frequency 중시)
- *
- * 2Q보다 다양한 접근 패턴에 적응적으로 대응
+ * <p>
+ * ARC uses 4 LRU lists:
+ * - T1: Recently referenced once (recency)
+ * - T2: Recently referenced two or more times (frequency)
+ * - B1: History of pages evicted from T1 (ghost entries)
+ * - B2: History of pages evicted from T2 (ghost entries)
+ * <p>
+ * Adaptive parameter p:
+ * - Dynamically adjusts the target size of T1
+ * - Increases p on B1 hit (emphasizes recency)
+ * - Decreases p on B2 hit (emphasizes frequency)
  *
  * @param <K> Key type
  * @param <V> Value type
@@ -32,36 +30,29 @@ public class ARCCacheTable<K, V> {
     private int threshold;
     private float loadFactor;
 
-    // 전체 캐시 크기
+    // Total cache size
     private int maxSize;
 
-    // 적응형 파라미터 p: T1의 목표 크기
+    // Adaptive parameter p: target size of T1
     private int p;
 
-    // T1: 최근 한 번 참조 (LRU)
+    // T1: Recently referenced once (LRU)
     private final CacheEntry<K, V> t1Header;
     private int t1Size;
 
-    // T2: 최근 두 번 이상 참조 (LRU)
+    // T2: Recently referenced two or more times (LRU)
     private final CacheEntry<K, V> t2Header;
     private int t2Size;
 
-    // B1: T1에서 제거된 키 히스토리 (ghost entries)
-    private final GhostEntry<K> b1Header;
+    // B1: History of keys evicted from T1 (ghost entries)
+    private final LinkedHashMap<K, K> b1Map;
     private int b1Size;
 
-    // B2: T2에서 제거된 키 히스토리 (ghost entries)
-    private final GhostEntry<K> b2Header;
+    // B2: History of keys evicted from T2 (ghost entries)
+    private final LinkedHashMap<K, K> b2Map;
     private int b2Size;
 
     private long defaultKeepTime = 0;
-
-    // Statistics
-    private int hitCount;
-    private int missCount;
-    private int putCount;
-    private int evictionCount;
-    private int adaptationCount;  // p 조정 횟수
 
     public ARCCacheTable() {
         this(DEFAULT_CAPACITY, DEFAULT_LOAD_FACTOR);
@@ -79,21 +70,14 @@ public class ARCCacheTable<K, V> {
         this.table = new CacheEntry[initCapacity];
         this.threshold = (int) (initCapacity * loadFactor);
 
-        // T1 초기화
         this.t1Header = new CacheEntry<>(null, null, 0, null, ListType.T1);
         this.t1Header.link_next = this.t1Header.link_prev = this.t1Header;
 
-        // T2 초기화
         this.t2Header = new CacheEntry<>(null, null, 0, null, ListType.T2);
         this.t2Header.link_next = this.t2Header.link_prev = this.t2Header;
 
-        // B1 초기화 (ghost entries)
-        this.b1Header = new GhostEntry<>(null);
-        this.b1Header.link_next = this.b1Header.link_prev = this.b1Header;
-
-        // B2 초기화 (ghost entries)
-        this.b2Header = new GhostEntry<>(null);
-        this.b2Header.link_next = this.b2Header.link_prev = this.b2Header;
+        this.b1Map = new LinkedHashMap<>();
+        this.b2Map = new LinkedHashMap<>();
     }
 
     public ARCCacheTable<K, V> setMaxRow(int max) {
@@ -101,7 +85,7 @@ public class ARCCacheTable<K, V> {
             throw new IllegalArgumentException("maxSize <= 0");
         }
         this.maxSize = max;
-        this.p = 0;  // 초기에는 T1/T2 균등 분배
+        this.p = 0;  // Initially equal distribution between T1/T2
         return this;
     }
 
@@ -120,18 +104,15 @@ public class ARCCacheTable<K, V> {
 
         CacheEntry<K, V> e = getEntry(key);
         if (e == null) {
-            missCount++;
             return null;
         }
 
         if (e.isExpired()) {
             removeEntry(e);
-            missCount++;
             return null;
         }
 
-        hitCount++;
-        // ARC 알고리즘: T1에 있으면 T2로 승격
+        // ARC algorithm: promote from T1 to T2 if in T1
         promoteToT2(e);
 
         return e.getValue();
@@ -183,9 +164,6 @@ public class ARCCacheTable<K, V> {
         if (key == null)
             return null;
 
-        putCount++;
-
-        // 이미 존재하는지 확인
         CacheEntry<K, V> existing = getEntry(key);
         if (existing != null) {
             V old = existing.value;
@@ -195,32 +173,32 @@ public class ARCCacheTable<K, V> {
             return old;
         }
 
-        // B1 또는 B2에 있었는지 확인 (ghost entry)
+        // Check if was in B1 or B2 (ghost entry)
         boolean inB1 = isInB1(key);
         boolean inB2 = isInB2(key);
 
         if (inB1) {
-            // B1 히트: recency가 중요 -> p 증가
+            // B1 hit: recency important -> increase p
             adaptP(true);
             removeFromB1(key);
 
-            // 공간 확보 후 T2로 직접 삽입
+            // Secure space then insert directly to T2
             if (size() >= maxSize) {
                 replace(ListType.B1);
             }
             insertToT2(key, value, keepTime);
         } else if (inB2) {
-            // B2 히트: frequency가 중요 -> p 감소
+            // B2 hit: frequency important -> decrease p
             adaptP(false);
             removeFromB2(key);
 
-            // 공간 확보 후 T2로 직접 삽입
+            // Secure space then insert directly to T2
             if (size() >= maxSize) {
                 replace(ListType.B2);
             }
             insertToT2(key, value, keepTime);
         } else {
-            // 새로운 키: onMiss 로직 적용
+            // New key: apply onMiss logic
             onMiss(key, value, keepTime);
         }
 
@@ -228,28 +206,32 @@ public class ARCCacheTable<K, V> {
     }
 
     /**
-     * 적응형 파라미터 p 조정
-     * @param b1Hit true면 B1 히트 (p 증가), false면 B2 히트 (p 감소)
+     * Adjust adaptive parameter p
+     * According to ARC paper: δ = max(1, |B2| / |B1|) for B1 hit, δ = max(1, |B1| / |B2|) for B2 hit
+     *
+     * @param b1Hit true if B1 hit (increase p), false if B2 hit (decrease p)
      */
     private void adaptP(boolean b1Hit) {
-        adaptationCount++;
+        onAdaptation();
 
         if (b1Hit) {
-            // B1 히트: recency 패턴 -> T1 크기 증가
-            int delta = (b2Size >= b1Size || b2Size == 0) ? 1 : (b1Size / b2Size);
+            // B1 hit: recency pattern -> increase T1 size
+            // δ = max(1, |B2| / |B1|)
+            int delta = (b1Size == 0) ? 1 : Math.max(1, b2Size / b1Size);
             p = Math.min(p + delta, maxSize);
         } else {
-            // B2 히트: frequency 패턴 -> T1 크기 감소
-            int delta = (b1Size >= b2Size || b1Size == 0) ? 1 : (b2Size / b1Size);
+            // B2 hit: frequency pattern -> decrease T1 size
+            // δ = max(1, |B1| / |B2|)
+            int delta = (b2Size == 0) ? 1 : Math.max(1, b1Size / b2Size);
             p = Math.max(p - delta, 0);
         }
     }
 
     /**
-     * 캐시 교체 정책 (ARC의 핵심)
-     * Caffeine ARC 알고리즘 구현 참고
+     * Cache replacement policy (core of ARC)
+     * Caffeine ARC algorithm implementation reference
      *
-     * @param candidateType 삽입될 후보의 타입 (B2에서 온 것인지 확인용)
+     * @param candidateType Type of candidate to insert (check if from B2)
      */
     private void replace(ListType candidateType) {
         // if (|T1| ≥ 1) and ((x ∈ B2 and |T1| = p) or (|T1| > p))
@@ -257,25 +239,23 @@ public class ARCCacheTable<K, V> {
         // else move the LRU page in T2 to the top of B2 and remove it from the cache.
 
         if ((t1Size >= 1) && (((candidateType == ListType.B2) && (t1Size == p)) || (t1Size > p))) {
-            // T1에서 제거하여 B1로 이동
             evictFromT1ToB1();
         } else {
-            // T2에서 제거하여 B2로 이동
             evictFromT2ToB2();
         }
     }
 
     /**
-     * 캐시 미스 처리 (새로운 키)
-     * Caffeine ARC onMiss 알고리즘 구현
-     *
+     * Cache miss handling (new key)
+     * Caffeine ARC onMiss algorithm implementation
+     * <p>
      * x ∈ L1 ∪ L2 (a miss in DBL(2c) and ARC(c)):
      * case (i) |L1| >= c:
-     *   If |T1| < c then delete the LRU page of B1 and REPLACE(p).
-     *   else delete LRU page of T1 and remove it from the cache.
+     * If |T1| < c then delete the LRU page of B1 and REPLACE(p).
+     * else delete LRU page of T1 and remove it from the cache.
      * case (ii) |L1| < c and |L1| + |L2| >= c:
-     *   if |L1| + |L2| = 2c then delete the LRU page of B2.
-     *   REPLACE(p).
+     * if |L1| + |L2| = 2c then delete the LRU page of B2.
+     * REPLACE(p).
      * Put x at the top of T1 and place it in the cache.
      */
     private void onMiss(K key, V value, long keepTime) {
@@ -285,18 +265,18 @@ public class ARCCacheTable<K, V> {
         // case (i) |L1| >= c (changed from == to handle growing L1)
         if (l1Size >= maxSize) {
             if (t1Size < maxSize) {
-                // T1이 여유가 있으면 B1에서 제거 후 replace
+                // If T1 has space, remove from B1 then replace
                 removeLRUFromB1();
                 replace(ListType.B1);
             } else {
-                // T1이 꽉 찼으면 T1에서 제거 (B1로 이동됨)
+                // If T1 is full, evict from T1 (moved to B1)
                 evictFromT1ToB1();
             }
         }
         // case (ii) |L1| < c and |L1| + |L2| >= c
-        else if (l1Size < maxSize && (l1Size + l2Size) >= maxSize) {
+        else if (l1Size + l2Size >= maxSize) {
             if ((l1Size + l2Size) >= (2 * maxSize)) {
-                // 전체가 꽉 찼으면 B2에서 제거
+                // If full, remove from B2
                 removeLRUFromB2();
             }
             replace(ListType.B1);
@@ -307,7 +287,7 @@ public class ARCCacheTable<K, V> {
     }
 
     private void insertToT1(K key, V value, long keepTime) {
-        // onMiss에서 이미 공간 관리를 수행했으므로 여기서는 삽입만 수행
+        // onMiss already handled space management, just insert here
         if (size() >= threshold) {
             rehash();
         }
@@ -318,7 +298,7 @@ public class ARCCacheTable<K, V> {
         CacheEntry<K, V> e = new CacheEntry<>(key, value, keepTime, tab[index], ListType.T1);
         tab[index] = e;
 
-        // T1 MRU 위치에 추가
+        // Add to T1 MRU position
         chain(t1Header.link_prev, t1Header, e);
         t1Size++;
     }
@@ -334,20 +314,20 @@ public class ARCCacheTable<K, V> {
         CacheEntry<K, V> e = new CacheEntry<>(key, value, keepTime, tab[index], ListType.T2);
         tab[index] = e;
 
-        // T2 MRU 위치에 추가
+        // Add to T2 MRU position
         chain(t2Header.link_prev, t2Header, e);
         t2Size++;
     }
 
     private void promoteToT2(CacheEntry<K, V> e) {
         if (e.listType == ListType.T2) {
-            // 이미 T2에 있으면 MRU로 이동
+            // If already in T2, move to MRU
             if (t2Header.link_prev != e) {
                 unchain(e);
                 chain(t2Header.link_prev, t2Header, e);
             }
         } else if (e.listType == ListType.T1) {
-            // T1에서 T2로 승격
+            // Promote from T1 to T2
             unchain(e);
             t1Size--;
             e.listType = ListType.T2;
@@ -358,9 +338,9 @@ public class ARCCacheTable<K, V> {
     }
 
     /**
-     * T1에서 LRU 제거하여 B1로 이동 (캐시에서 완전 제거)
+     * Evict LRU from T1 to B1 (complete removal from cache)
      */
-    private void evictFromT1ToB1() {
+    protected void evictFromT1ToB1() {
         if (t1Size == 0)
             return;
 
@@ -374,19 +354,26 @@ public class ARCCacheTable<K, V> {
         removeFromHashTable(key);
         unchain(victim);
         t1Size--;
-        evictionCount++;
+        onEviction();
 
-        // 콜백 호출
         entryRemoved(true, key, value, null);
 
-        // B1에 ghost entry 추가
+        // Add ghost entry to B1
         addToB1(key);
     }
 
+    protected void onAdaptation() {
+        // Default: do nothing (no overhead)
+    }
+
+    protected void onEviction() {
+        // Default: do nothing (no overhead)
+    }
+
     /**
-     * T2에서 LRU 제거하여 B2로 이동 (캐시에서 완전 제거)
+     * Evict LRU from T2 to B2 (complete removal from cache)
      */
-    private void evictFromT2ToB2() {
+    protected void evictFromT2ToB2() {
         if (t2Size == 0)
             return;
 
@@ -400,70 +387,41 @@ public class ARCCacheTable<K, V> {
         removeFromHashTable(key);
         unchain(victim);
         t2Size--;
-        evictionCount++;
+        onEviction();
 
-        // 콜백 호출
         entryRemoved(true, key, value, null);
 
-        // B2에 ghost entry 추가
+        // Add ghost entry to B2
         addToB2(key);
     }
 
     private void addToB1(K key) {
-        GhostEntry<K> ghost = new GhostEntry<>(key);
-        chainGhost(b1Header.link_prev, b1Header, ghost);
+        b1Map.put(key, key);
         b1Size++;
     }
 
     private void addToB2(K key) {
-        GhostEntry<K> ghost = new GhostEntry<>(key);
-        chainGhost(b2Header.link_prev, b2Header, ghost);
+        b2Map.put(key, key);
         b2Size++;
     }
 
     private boolean isInB1(K key) {
-        GhostEntry<K> current = b1Header.link_next;
-        while (current != b1Header) {
-            if (CompareUtil.equals(current.key, key)) {
-                return true;
-            }
-            current = current.link_next;
-        }
-        return false;
+        return b1Map.containsKey(key);
     }
 
     private boolean isInB2(K key) {
-        GhostEntry<K> current = b2Header.link_next;
-        while (current != b2Header) {
-            if (CompareUtil.equals(current.key, key)) {
-                return true;
-            }
-            current = current.link_next;
-        }
-        return false;
+        return b2Map.containsKey(key);
     }
 
     private void removeFromB1(K key) {
-        GhostEntry<K> current = b1Header.link_next;
-        while (current != b1Header) {
-            if (CompareUtil.equals(current.key, key)) {
-                unchainGhost(current);
-                b1Size--;
-                return;
-            }
-            current = current.link_next;
+        if (b1Map.remove(key) != null) {
+            b1Size--;
         }
     }
 
     private void removeFromB2(K key) {
-        GhostEntry<K> current = b2Header.link_next;
-        while (current != b2Header) {
-            if (CompareUtil.equals(current.key, key)) {
-                unchainGhost(current);
-                b2Size--;
-                return;
-            }
-            current = current.link_next;
+        if (b2Map.remove(key) != null) {
+            b2Size--;
         }
     }
 
@@ -471,22 +429,18 @@ public class ARCCacheTable<K, V> {
         if (b1Size == 0)
             return;
 
-        GhostEntry<K> oldest = b1Header.link_next;
-        if (oldest != b1Header) {
-            unchainGhost(oldest);
-            b1Size--;
-        }
+        K oldestKey = b1Map.keySet().iterator().next();
+        b1Map.remove(oldestKey);
+        b1Size--;
     }
 
     private void removeLRUFromB2() {
         if (b2Size == 0)
             return;
 
-        GhostEntry<K> oldest = b2Header.link_next;
-        if (oldest != b2Header) {
-            unchainGhost(oldest);
-            b2Size--;
-        }
+        K oldestKey = b2Map.keySet().iterator().next();
+        b2Map.remove(oldestKey);
+        b2Size--;
     }
 
     private void removeFromHashTable(K key) {
@@ -530,7 +484,6 @@ public class ARCCacheTable<K, V> {
         V value = e.value;
         removeEntry(e);
 
-        // Ghost 리스트에서도 제거
         removeFromB1(key);
         removeFromB2(key);
 
@@ -539,13 +492,14 @@ public class ARCCacheTable<K, V> {
 
     public synchronized void clear() {
         CacheEntry<K, V>[] tab = table;
-        for (int index = tab.length; --index >= 0;)
+        for (int index = tab.length; --index >= 0; )
             tab[index] = null;
 
         t1Header.link_next = t1Header.link_prev = t1Header;
         t2Header.link_next = t2Header.link_prev = t2Header;
-        b1Header.link_next = b1Header.link_prev = b1Header;
-        b2Header.link_next = b2Header.link_prev = b2Header;
+
+        b1Map.clear();
+        b2Map.clear();
 
         t1Size = 0;
         t2Size = 0;
@@ -575,7 +529,7 @@ public class ARCCacheTable<K, V> {
     }
 
     private int hash(Object key) {
-        return (int) (key.hashCode()) & Integer.MAX_VALUE;
+        return (key.hashCode()) & Integer.MAX_VALUE;
     }
 
     protected void rehash() {
@@ -587,8 +541,8 @@ public class ARCCacheTable<K, V> {
         threshold = (int) (newCapacity * loadFactor);
         table = newMap;
 
-        for (int i = oldCapacity; i-- > 0;) {
-            for (CacheEntry<K, V> old = oldMap[i]; old != null;) {
+        for (int i = oldCapacity; i-- > 0; ) {
+            for (CacheEntry<K, V> old = oldMap[i]; old != null; ) {
                 CacheEntry<K, V> e = old;
                 old = old.next;
                 K key = e.key;
@@ -618,22 +572,8 @@ public class ARCCacheTable<K, V> {
         e.link_next = null;
     }
 
-    private void chainGhost(GhostEntry<K> link_prev, GhostEntry<K> link_next, GhostEntry<K> e) {
-        e.link_prev = link_prev;
-        e.link_next = link_next;
-        link_prev.link_next = e;
-        link_next.link_prev = e;
-    }
-
-    private void unchainGhost(GhostEntry<K> e) {
-        e.link_prev.link_next = e.link_next;
-        e.link_next.link_prev = e.link_prev;
-        e.link_prev = null;
-        e.link_next = null;
-    }
-
     protected void entryRemoved(boolean evicted, K key, V oldValue, V newValue) {
-        // 기본 구현은 비어있음. 서브클래스에서 override
+        // Default implementation is empty. Override in subclass
     }
 
     public synchronized void resize(int maxSize) {
@@ -642,7 +582,7 @@ public class ARCCacheTable<K, V> {
         }
 
         this.maxSize = maxSize;
-        this.p = 0;  // 재설정
+        this.p = 0;
 
         Map<K, V> snapshot = snapshot();
         clear();
@@ -653,16 +593,14 @@ public class ARCCacheTable<K, V> {
     }
 
     public synchronized Map<K, V> snapshot() {
-        Map<K, V> result = new HashMap<K, V>();
+        Map<K, V> result = new HashMap<>();
 
-        // T1 항목 수집
         CacheEntry<K, V> current = t1Header.link_next;
         while (current != t1Header) {
             result.put(current.key, current.value);
             current = current.link_next;
         }
 
-        // T2 항목 수집
         current = t2Header.link_next;
         while (current != t2Header) {
             result.put(current.key, current.value);
@@ -672,48 +610,35 @@ public class ARCCacheTable<K, V> {
         return result;
     }
 
-    public synchronized int hitCount() {
-        return hitCount;
-    }
-
-    public synchronized int missCount() {
-        return missCount;
-    }
-
-    public synchronized int putCount() {
-        return putCount;
-    }
-
-    public synchronized int evictionCount() {
-        return evictionCount;
-    }
-
-    public synchronized int adaptationCount() {
-        return adaptationCount;
-    }
 
     public synchronized int getP() {
         return p;
-    }
-
-    public synchronized float hitRate() {
-        int accesses = hitCount + missCount;
-        return accesses != 0 ? (float) hitCount / accesses : 0.0f;
     }
 
     public synchronized int maxSize() {
         return maxSize;
     }
 
+    protected int getT1Size() {
+        return t1Size;
+    }
+
+    protected int getT2Size() {
+        return t2Size;
+    }
+
+    protected int getB1Size() {
+        return b1Size;
+    }
+
+    protected int getB2Size() {
+        return b2Size;
+    }
+
     @Override
     public synchronized String toString() {
-        int accesses = hitCount + missCount;
-        int hitPercent = accesses != 0 ? (100 * hitCount / accesses) : 0;
-        return String.format("ARCCache[size=%d/%d, hits=%d, misses=%d, hitRate=%d%%, " +
-                        "T1=%d, T2=%d, B1=%d, B2=%d, p=%d, adaptations=%d, puts=%d, evictions=%d]",
-                size(), maxSize, hitCount, missCount, hitPercent,
-                t1Size, t2Size, b1Size, b2Size, p, adaptationCount,
-                putCount, evictionCount);
+        return String.format("ARCCache[size=%d/%d, T1=%d, T2=%d, B1=%d, B2=%d, p=%d]",
+                size(), maxSize, t1Size, t2Size, b1Size, b2Size, p);
     }
 
     private enum ListType {
@@ -771,15 +696,6 @@ public class ARCCacheTable<K, V> {
 
         public String toString() {
             return key + "=" + value + "[" + listType + "]";
-        }
-    }
-
-    private static class GhostEntry<K> {
-        private K key;
-        GhostEntry<K> link_next, link_prev;
-
-        protected GhostEntry(K key) {
-            this.key = key;
         }
     }
 
