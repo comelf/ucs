@@ -24,7 +24,135 @@ SELECT SUM(amount) → amount.fwd만 읽음 (city, ts 안 읽음)
 
 ---
 
-## 2. 세그먼트 생성 흐름
+## 2. 기술 원리
+
+### 2.1 Row-Oriented vs Column-Oriented 저장
+
+전통적 RDBMS는 행(Row) 단위로 데이터를 디스크에 연속 저장한다. 한 행의 모든 컬럼이 인접하므로 `SELECT *` 같은 전체 행 조회에 유리하다. 반면 `SELECT SUM(amount)`처럼 특정 컬럼만 필요한 분석 쿼리에서는 불필요한 컬럼까지 읽어야 하므로 I/O 낭비가 발생한다.
+
+```
+Row-Oriented (RDBMS):
+  디스크 블록: [city="Seoul",amount=1500,ts=1700000000][city="Busan",amount=3200,ts=1700000001]...
+  SUM(amount) → 모든 바이트를 읽고 amount 필드만 추출 → I/O 낭비
+
+Column-Oriented (Pinot):
+  amount 파일: [1500][3200][800][4100]...
+  SUM(amount) → amount 파일만 순차 읽기 → 최소 I/O
+
+I/O 비교 (100개 컬럼, 1억 행):
+  Row: 100억 값 읽기 (전체)
+  Column: 1억 값 읽기 (1/100)
+```
+
+### 2.2 CPU 캐시 효율과 SIMD 최적화
+
+컬럼 단위 저장은 같은 데이터 타입의 값이 메모리에 연속 배치되므로 CPU 활용 효율이 극대화된다.
+
+```
+캐시 라인 활용:
+  64바이트 캐시 라인에 INT(4B) 16개가 적재
+  → 한 번의 메모리 접근으로 16개 값 처리 가능
+
+SIMD 벡터 연산:
+  컬럼이 연속 INT 배열이므로 CPU의 SIMD 명령어 적용 가능
+  AVX-256: 한 사이클에 8개 INT 동시 비교/합산
+  → 행 단위 저장에서는 필드 오프셋이 불규칙하여 SIMD 불가
+
+프리페치(Prefetch):
+  순차 접근 패턴 → CPU가 다음 캐시 라인을 미리 로드
+  → 행 단위 저장의 랜덤 접근 대비 10~100배 빠른 스캔
+```
+
+### 2.3 딕셔너리 인코딩 원리
+
+딕셔너리 인코딩은 **도메인 인코딩(domain encoding)**의 일종으로, 값의 집합(도메인)에 순번을 부여하여 저장 공간을 줄이는 기법이다.
+
+```
+정보이론 관점:
+  원본 "Seoul" = 5바이트 (UTF-8)
+  dictId 1     = log2(cardinality) 비트 (cardinality=2면 1비트)
+
+공간 절약률:
+  N개 행, 평균 L바이트 문자열, 카디널리티 C:
+    원본: N × L 바이트
+    인코딩: C × L (딕셔너리) + N × ceil(log2(C)) 비트 (인덱스)
+
+  예: 1억 행, 평균 10바이트, 카디널리티 1000
+    원본: 1억 × 10 = 1GB
+    인코딩: 1000 × 10 + 1억 × 10비트 ≈ 10KB + 125MB ≈ 125MB (87% 절약)
+
+추가 이점 - 비교 연산 가속:
+  문자열 비교: O(L) 바이트 순차 비교
+  dictId 비교: O(1) 정수 비교
+  → WHERE city='Seoul' → dictId 조회 1번 + 정수 비교 N번
+```
+
+### 2.4 청크 기반 압축의 원리
+
+데이터를 청크(chunk) 단위로 분할하여 압축하는 것은 **랜덤 액세스와 압축률 사이의 트레이드오프**를 최적화하는 기법이다.
+
+```
+전체 파일 압축:
+  + 최고 압축률 (긴 문맥에서 패턴 학습)
+  - 임의 위치 읽기 불가 (전체 해압축 필요)
+
+행 단위 압축:
+  + 완벽한 랜덤 액세스
+  - 최저 압축률 (문맥이 너무 짧음)
+
+청크 단위 압축 (Pinot 방식):
+  1000행씩 묶어 압축
+  + 적당한 압축률 (1000행의 문맥으로 패턴 학습)
+  + 랜덤 액세스: 해당 청크만 해압축 (1/1000 비용)
+  + 순차 스캔: 청크 단위 프리페치로 효율적
+
+docId=2500 접근:
+  청크 2만 해압축 (4KB) vs 전체 해압축 (수 MB~GB)
+```
+
+### 2.5 Memory-Mapped I/O (mmap) 원리
+
+Pinot는 세그먼트 파일을 `mmap`으로 메모리에 매핑하여 OS 페이지 캐시를 활용한다.
+
+```
+mmap 동작 원리:
+  1. 파일을 가상 주소 공간에 매핑 (물리 메모리 할당 없음)
+  2. 접근 시 Page Fault 발생 → OS가 해당 페이지를 디스크에서 로드
+  3. 이후 접근은 메모리에서 직접 읽기 (디스크 I/O 없음)
+  4. 메모리 부족 시 OS가 LRU 기반으로 페이지 회수
+
+이점:
+  - JVM 힙 외부(off-heap) → GC 영향 없음
+  - OS가 페이지 캐시를 자동 관리 → 수동 캐시 불필요
+  - 여러 프로세스가 같은 파일을 공유 가능
+  - 4KB 페이지 단위 lazy loading → 메모리 효율적
+
+주의:
+  - 전체 파일이 물리 메모리에 올라가는 것이 아님
+  - 워킹 셋(자주 접근하는 부분)만 물리 메모리에 유지
+  - Cold 데이터는 디스크에서 on-demand 로드
+```
+
+### 2.6 V3 단일 파일 통합의 원리
+
+V1의 컬럼별 개별 파일 방식은 컬럼이 많아지면 file descriptor 고갈 문제가 발생한다. V3는 모든 인덱스를 `columns.psf` 하나에 통합하고, `index_map`으로 각 인덱스의 offset/size를 관리한다.
+
+```
+V1 문제:
+  50개 컬럼 × 3개 인덱스(dict, fwd, inv) = 150개 파일/세그먼트
+  1000개 세그먼트 → 15만 개 file descriptor
+  Linux 기본 ulimit: 1024 → 고갈
+
+V3 해결:
+  1000개 세그먼트 → 3000~4000개 file descriptor
+  mmap으로 단일 파일 내 offset 기반 접근 → 성능 차이 없음
+
+index_map은 세그먼트 로딩 시 한 번 파싱 → 이후 offset으로 O(1) 접근
+```
+
+---
+
+## 3. 세그먼트 생성 흐름
 
 소스: `SegmentColumnarIndexCreator.java`, `ColumnIndexCreators.java`
 
@@ -53,7 +181,7 @@ SegmentWriter.flush()
 
 ---
 
-## 3. 딕셔너리 인코딩
+## 4. 딕셔너리 인코딩
 
 소스: `SegmentDictionaryCreator.java`
 
@@ -117,7 +245,7 @@ BaseImmutableDictionary
 
 ---
 
-## 4. 포워드 인덱스 (Forward Index)
+## 5. 포워드 인덱스 (Forward Index)
 
 ### 4.1 유형
 
@@ -278,7 +406,7 @@ if (isFixedWidth && !_isCompressed && isContiguousRange(docIds, length)) {
 
 ---
 
-## 5. 압축 코덱
+## 6. 압축 코덱
 
 소스: `ChunkCompressorFactory`, `ForwardIndexConfig`
 
@@ -300,7 +428,7 @@ ForwardIndex 기본 설정:
 
 ---
 
-## 6. 세그먼트 파일 구조
+## 7. 세그먼트 파일 구조
 
 소스: `V1Constants.java`, `SegmentLocalFSDirectory.java`
 
@@ -377,7 +505,7 @@ columns.psf 내부:
 
 ---
 
-## 7. 컬럼 메타데이터
+## 8. 컬럼 메타데이터
 
 소스: `V1Constants.java:106-140`
 
@@ -401,7 +529,7 @@ column.{name}.maxValue           최댓값
 
 ---
 
-## 8. 읽기 모드
+## 9. 읽기 모드
 
 소스: `SegmentLocalFSDirectory.java`
 
@@ -414,7 +542,7 @@ column.{name}.maxValue           최댓값
 
 ---
 
-## 9. 주요 소스 파일 맵
+## 10. 주요 소스 파일 맵
 
 ```
 pinot-spi/
@@ -463,7 +591,7 @@ pinot-segment-local/
 
 ---
 
-## 10. 참조 라이브러리 / 의존성
+## 11. 참조 라이브러리 / 의존성
 
 | 라이브러리 | 용도 | 사용 위치 |
 |-----------|------|----------|
@@ -476,7 +604,7 @@ pinot-segment-local/
 
 ---
 
-## 11. 핵심 상수 / 기본값
+## 12. 핵심 상수 / 기본값
 
 ```java
 // 포워드 인덱스

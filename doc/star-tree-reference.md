@@ -26,7 +26,97 @@ Star-Tree:  트리 3~4단계 탐색 → 사전 집계 값 읽기 → 수 밀리�
 
 ---
 
-## 2. 데이터 모델
+## 2. 기술 원리
+
+### 2.1 OLAP Cube와 Materialized View
+
+Star-Tree는 OLAP Cube(데이터 큐브)의 구현체이다. OLAP Cube는 Jim Gray가 1997년 제안한 개념으로, 다차원 데이터의 모든 가능한 GROUP BY 조합을 미리 계산하여 저장하는 기법이다.
+
+```
+N개 차원의 전체 큐브 = 2^N개의 GROUP BY 조합
+
+예: 차원 2개 (country, city)
+  Level 0: GROUP BY ()                        → 전체 합계 1개
+  Level 1: GROUP BY (country), GROUP BY (city) → 부분 합계
+  Level 2: GROUP BY (country, city)           → 상세 합계
+
+전체 큐브 크기 = 2^2 = 4개 조합
+```
+
+전체 큐브를 저장하면 공간이 기하급수적으로 증가하므로, Star-Tree는 **트리 구조를 활용하여 공간을 공유**한다. 같은 접두사를 가진 차원 조합은 트리의 같은 경로를 공유하므로, 전체 큐브 대비 훨씬 적은 공간으로 동일한 쿼리 성능을 제공한다.
+
+### 2.2 Star(*) 노드의 원리
+
+Star 노드는 관계 대수(Relational Algebra)의 **프로젝션(projection)** 연산에 해당한다. 특정 차원을 제거(project out)하고 남은 차원들에 대해 집계한 결과를 저장한다.
+
+```
+Star(*) = 해당 차원의 모든 값을 합친 집계 결과
+
+수학적 표현:
+  Star(city, country=KR) = Σ f(city_i, country=KR)  for all city_i
+
+이것이 가능한 이유:
+  SUM, COUNT, MIN, MAX 등은 "분배 가능 집계 함수(distributive aggregate)"
+  → 부분 결과를 합쳐도 전체 결과와 동일
+  → SUM(A ∪ B) = SUM(A) + SUM(B)
+```
+
+AVG는 직접 분배가 불가능하므로 SUM + COUNT 쌍으로 저장 후 나중에 나누어 계산한다. 이를 "대수적 집계 함수(algebraic aggregate)"라 한다.
+
+### 2.3 차원 분할 순서 (Split Order)의 영향
+
+트리의 차원 분할 순서는 쿼리 성능과 공간 효율에 직접적으로 영향을 미친다.
+
+```
+카디널리티가 낮은 차원을 상위에 배치하면:
+  → 트리 상단이 좁아짐 → 탐색 경로가 짧아짐
+  → Star 노드의 집계 범위가 넓어짐 → 더 많은 쿼리 커버
+
+예: country(5종) → city(1000종) 순으로 분할
+  Level 1: 5개 노드 + 1 Star = 6개
+  Level 2: 최대 1000개 노드 + Star = 리프
+
+반대로 city(1000종) → country(5종) 순이면:
+  Level 1: 1000개 노드 + 1 Star = 1001개
+  Level 2: 최대 5개 노드 + Star = 리프
+  → 첫 번째 레벨이 비대해져 탐색 비효율
+```
+
+### 2.4 BFS 직렬화와 캐시 효율
+
+노드를 BFS(너비 우선) 순서로 저장하면, 같은 부모의 자식 노드들이 메모리에 **연속으로 배치**된다. CPU의 L1/L2 캐시 라인(보통 64바이트)에 인접한 2~3개 노드가 동시에 로딩되므로, 이진 탐색 시 캐시 미스가 최소화된다.
+
+```
+28바이트 고정 노드 → 64바이트 캐시 라인에 2개 적재
+이진 탐색: O(log C)번 비교 (C = 자식 수)
+실제 메모리 접근: 대부분 캐시 히트 (형제 노드가 같은 라인)
+
+비교:
+  DFS 직렬화: 형제가 트리 깊이만큼 떨어져 배치 → 캐시 미스 빈번
+  BFS 직렬화: 형제가 연속 배치 → 캐시 히트율 극대화
+```
+
+### 2.5 공간-시간 트레이드오프
+
+Star-Tree는 전형적인 **공간-시간 트레이드오프(space-time tradeoff)** 기법이다.
+
+```
+추가 저장 공간:
+  원본 N행 + 집계 문서 M행 (M ≪ N, 보통 1~10%)
+  차원 카디널리티의 곱에 비례: |D1| × |D2| × ... × |Dk|
+
+절약되는 쿼리 시간:
+  O(N) 스캔 → O(depth × log(max_cardinality)) 탐색
+  10억 행 → 3~4단계 탐색 (수천 배 절약)
+
+maxLeafRecords 파라미터로 트레이드오프 조절:
+  작은 값 → 더 깊은 트리, 더 많은 집계 문서, 더 빠른 쿼리
+  큰 값   → 얕은 트리, 적은 집계 문서, 리프에서 일부 스캔 필요
+```
+
+---
+
+## 3. 데이터 모델
 
 ### 2.1 원본 → 집계 문서 생성 과정
 
@@ -72,7 +162,7 @@ Star-Tree:  트리 3~4단계 탐색 → 사전 집계 값 읽기 → 수 밀리�
 
 ---
 
-## 3. 노드 바이너리 포맷
+## 4. 노드 바이너리 포맷
 
 소스: `OffHeapStarTreeNode.java:29-37`
 
@@ -101,7 +191,7 @@ private int getInt(int fieldOffset) {
 
 ---
 
-## 4. 파일 레이아웃
+## 5. 파일 레이아웃
 
 소스: `StarTreeBuilderUtils.java:136-158`, `OffHeapStarTree.java:45-83`
 
@@ -133,7 +223,7 @@ private int getInt(int fieldOffset) {
 
 ---
 
-## 5. 빌드 과정
+## 6. 빌드 과정
 
 소스: `StarTreeBuilderUtils.java:203-227`
 
@@ -169,7 +259,7 @@ BFS 순서 저장의 이점: **같은 부모의 자식 노드들이 메모리에
 
 ---
 
-## 6. 쿼리 시 탐색
+## 7. 쿼리 시 탐색
 
 ### 6.1 자식 노드 검색: 이진 탐색
 
@@ -216,7 +306,7 @@ SELECT SUM(amount) FROM orders WHERE country='KR'
 
 ---
 
-## 7. 설정 (StarTreeV2BuilderConfig)
+## 8. 설정 (StarTreeV2BuilderConfig)
 
 소스: `StarTreeBuilderUtils.java:76-94`
 
@@ -243,7 +333,7 @@ SELECT SUM(amount) FROM orders WHERE country='KR'
 
 ---
 
-## 8. 지원 집계 함수
+## 9. 지원 집계 함수
 
 소스: `StarTreeBuilderUtils.java:336-421`
 
@@ -261,7 +351,7 @@ SELECT SUM(amount) FROM orders WHERE country='KR'
 
 ---
 
-## 9. 주요 소스 파일 맵
+## 10. 주요 소스 파일 맵
 
 ```
 pinot-segment-spi/
@@ -288,7 +378,7 @@ pinot-core/
 
 ---
 
-## 10. 참조 라이브러리 / 의존성
+## 11. 참조 라이브러리 / 의존성
 
 | 라이브러리 | 용도 | 사용 위치 |
 |-----------|------|----------|
@@ -301,7 +391,7 @@ pinot-core/
 
 ---
 
-## 11. 핵심 상수
+## 12. 핵심 상수
 
 ```java
 MAGIC_MARKER = 0xBADDA55B00DAD00DL   // 파일 유효성 검증
